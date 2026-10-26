@@ -1,14 +1,35 @@
 import unittest
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 from app.core.database import Database
 from app.experiments.metrics import summarize_run
 from app.api.experiments import summarize_policies
+from app.api.monitoring import get_overview
 from app.monitoring.features import extract_features
 from app.prediction.risk_estimator import estimate_risk
 from app.recovery.decision_engine import choose_action
 from app.schemas import SettingsUpdate, validate_settings_update
+
+
+class MonitoringTests(unittest.TestCase):
+    def test_overview_counts_only_measured_responsive_processes(self):
+        processes = [
+            {"status": "running", "metrics": {"responsive": 1}, "prediction": None},
+            {"status": "running", "metrics": None, "prediction": None},
+            {"status": "running", "metrics": {"responsive": None}, "prediction": None},
+        ]
+        with (
+            patch("app.api.monitoring.process_manager.list_processes", return_value=processes),
+            patch(
+                "app.api.monitoring.database.query",
+                side_effect=[[], [{"count": 0}], []],
+            ),
+        ):
+            overview = get_overview()
+
+        self.assertEqual(overview["healthy_processes"], 1)
 
 
 class FeatureTests(unittest.TestCase):
@@ -66,6 +87,20 @@ class RiskAndDecisionTests(unittest.TestCase):
         self.assertTrue(prediction.contributors)
         self.assertIn("uncalibrated", prediction.model_name)
 
+    def test_combined_cpu_and_memory_pressure_can_reach_high_risk(self):
+        prediction = estimate_risk(
+            "managed-id",
+            {
+                "cpu_mean": 95, "cpu_trend": 40,
+                "memory_growth_mb_s": 3, "memory_acceleration_mb_s2": 1.5,
+                "missed_heartbeats": 0, "abnormal_samples": 10,
+                "history_samples": 10,
+            },
+            30, 0.35, 0.65,
+        )
+        self.assertEqual(prediction.category, "High")
+        self.assertGreaterEqual(prediction.risk_score, 0.65)
+
     def test_low_confidence_requests_recheck(self):
         decision = choose_action(
             policy="preemptguard", risk_score=0.4, confidence=0.3,
@@ -116,6 +151,15 @@ class RiskAndDecisionTests(unittest.TestCase):
             low_threshold=0.35, high_threshold=0.65, responsive=True,
             failed=False, restart_count=0, restart_limit=3,
             workload_type="cpu", cpu_overloaded=True, throttled=False,
+        )
+        self.assertEqual(decision.action, "throttle")
+
+    def test_combined_cpu_memory_workload_is_throttled_once(self):
+        decision = choose_action(
+            policy="preemptguard", risk_score=0.7, confidence=0.9,
+            low_threshold=0.35, high_threshold=0.65, responsive=True,
+            failed=False, restart_count=0, restart_limit=3,
+            workload_type="cpu_memory", cpu_overloaded=True, throttled=False,
         )
         self.assertEqual(decision.action, "throttle")
 

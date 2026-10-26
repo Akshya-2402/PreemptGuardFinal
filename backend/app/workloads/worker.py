@@ -55,7 +55,7 @@ def run(
             elif completed_retries == 0:
                 operation_status = "failed"
         sleep_duration = 0.5
-        if workload_type == "cpu":
+        if workload_type in ("cpu", "cpu_memory"):
             throttled = bool(controls.get("throttle"))
             busy_duration = 0.05 if throttled else 0.45
             sleep_duration = 0.45 if throttled else 0.05
@@ -63,7 +63,7 @@ def run(
             value = 0.0
             while time.perf_counter() < busy_until:
                 value = math.sin(value + 1.0)
-        elif workload_type == "memory" and allocated_mb < memory_limit_mb:
+        if workload_type in ("memory", "cpu_memory") and allocated_mb < memory_limit_mb:
             amount = min(memory_rate_mb_s, memory_limit_mb - allocated_mb, 2.0)
             allocations.append(bytearray(int(amount * 1024 * 1024)))
             allocated_mb += amount

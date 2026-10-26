@@ -20,8 +20,12 @@ def get_overview():
     return {
         "total_processes": len(processes),
         "healthy_processes": sum(
-            item.get("metrics") and item["metrics"]["responsive"]
-            and item["status"] == "running" for item in processes
+            bool(
+                item.get("metrics")
+                and item["metrics"].get("responsive")
+                and item["status"] == "running"
+            )
+            for item in processes
         ),
         "moderate_or_high_risk": sum(score >= 0.35 for score in risks),
         "confirmed_failures": failures,

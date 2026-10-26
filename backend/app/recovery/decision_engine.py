@@ -86,7 +86,7 @@ def choose_action(
                 "Temporary operation retries were exhausted; restart the managed workload.",
                 2.0,
             )
-        if workload_type == "cpu" and cpu_overloaded and not throttled:
+        if workload_type in ("cpu", "cpu_memory") and cpu_overloaded and not throttled:
             return Decision(
                 "throttle",
                 "Sustained CPU load detected; reduce the managed worker's CPU duty cycle before restarting.",

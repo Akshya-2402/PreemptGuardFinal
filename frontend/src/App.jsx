@@ -229,7 +229,7 @@ function App() {
           <form className="panel form-panel" onSubmit={startWorkload}>
             <div className="form-grid">
               <label>Workload type<select value={workload} onChange={(event) => setWorkload(event.target.value)}>
-                {["healthy", "cpu", "memory", "unresponsive", "crash", "intermittent", "repeated_failure", "temporary_io"].map((item) => <option key={item} value={item}>{item.replaceAll("_", " ")}</option>)}
+                {["healthy", "cpu", "cpu_memory", "memory", "unresponsive", "crash", "intermittent", "repeated_failure", "temporary_io"].map((item) => <option key={item} value={item}>{item.replaceAll("_", " ")}</option>)}
               </select></label>
               <label>Recovery policy<select value={policy} onChange={(event) => setPolicy(event.target.value)}>
                 <option value="preemptguard">PreemptGuard · predictive</option><option value="threshold">Threshold baseline</option><option value="fixed">Fixed-restart baseline</option>
@@ -256,7 +256,7 @@ function App() {
           <form className="panel form-panel" onSubmit={startExperiment}>
             <div className="form-grid">
               <label>Workload scenario<select value={experimentType} onChange={(event) => setExperimentType(event.target.value)}>
-                {["healthy", "cpu", "memory", "unresponsive", "crash", "intermittent", "repeated_failure", "temporary_io"].map((item) => <option key={item} value={item}>{item.replaceAll("_", " ")}</option>)}
+                {["healthy", "cpu", "cpu_memory", "memory", "unresponsive", "crash", "intermittent", "repeated_failure", "temporary_io"].map((item) => <option key={item} value={item}>{item.replaceAll("_", " ")}</option>)}
               </select></label>
               <label>Observation duration (seconds)<input type="number" min="5" max="3600" value={experimentDuration} onChange={(event) => setExperimentDuration(event.target.value)} /></label>
               <label>Complete-run repetitions<input type="number" min="1" max="10" value={experimentRepetitions} onChange={(event) => setExperimentRepetitions(event.target.value)} /></label>

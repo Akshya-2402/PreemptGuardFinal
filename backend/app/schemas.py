@@ -7,7 +7,7 @@ from app.core.config import Settings
 
 class WorkloadRequest(BaseModel):
     workload_type: Literal[
-        "healthy", "cpu", "memory", "unresponsive",
+        "healthy", "cpu", "cpu_memory", "memory", "unresponsive",
         "crash", "intermittent", "repeated_failure", "temporary_io",
     ]
     name: str | None = Field(default=None, max_length=80)
