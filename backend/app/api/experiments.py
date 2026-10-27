@@ -20,6 +20,7 @@ from app.schemas import WorkloadRequest
 from app.workloads.manager import process_manager
 
 router = APIRouter(prefix="/api/experiments", tags=["experiments"])
+FAILURE_WORKLOAD_TYPES = {"crash", "repeated_failure", "unresponsive", "intermittent"}
 SUMMARY_METRICS = (
     "precision",
     "recall",
@@ -38,9 +39,16 @@ SUMMARY_METRICS = (
 
 def summarize_policies(rows: list[dict[str, object]]) -> list[dict[str, object]]:
     summaries: list[dict[str, object]] = []
-    policy_names = list(dict.fromkeys(str(row["policy"]) for row in rows))
-    for policy in policy_names:
-        policy_runs = [row for row in rows if row["policy"] == policy]
+    groups = list(dict.fromkeys(
+        (str(row["policy"]), str(row.get("scenario", "measured")))
+        for row in rows
+    ))
+    for policy, scenario in groups:
+        policy_runs = [
+            row for row in rows
+            if row["policy"] == policy
+            and str(row.get("scenario", "measured")) == scenario
+        ]
         metrics: dict[str, object] = {}
         for name in SUMMARY_METRICS:
             values = [
@@ -55,15 +63,27 @@ def summarize_policies(rows: list[dict[str, object]]) -> list[dict[str, object]]
             }
         summaries.append({
             "policy": policy,
+            "scenario": scenario,
             "run_count": len(policy_runs),
             "metrics": metrics,
         })
     return summaries
 
 
+def build_experiment_scenarios(workload: WorkloadRequest) -> list[tuple[str, WorkloadRequest]]:
+    failure_workload = workload
+    if workload.workload_type not in FAILURE_WORKLOAD_TYPES:
+        failure_workload = workload.model_copy(update={"workload_type": "crash"})
+    healthy_workload = workload.model_copy(update={"workload_type": "healthy"})
+    return [
+        ("healthy_control", healthy_workload),
+        ("failure_scenario", failure_workload),
+    ]
+
+
 class ExperimentRequest(BaseModel):
     workload_type: WorkloadRequest
-    duration_s: int = Field(default=20, ge=5, le=3600)
+    duration_s: int = Field(default=40, ge=5, le=3600)
     repetitions: int = Field(default=1, ge=1, le=10)
     randomization_seed: int | None = Field(default=None, ge=0, le=4_294_967_295)
     sampling_interval: float | None = Field(default=None, ge=0.25, le=30.0)
@@ -80,6 +100,19 @@ class ExperimentRequest(BaseModel):
         high = self.high_risk_threshold
         if low is not None and high is not None and low >= high:
             raise ValueError("low_risk_threshold must be less than high_risk_threshold")
+        current_settings = settings_store.get()
+        horizon = self.prediction_horizon or current_settings.prediction_horizon
+        interval = self.sampling_interval or current_settings.monitoring_interval
+        if self.duration_s < horizon + 3 * interval:
+            raise ValueError(
+                "Observation duration must be at least the prediction horizon plus "
+                "three sampling intervals to include fully observed negative windows."
+            )
+        if self.workload_type.fault_after_s >= horizon:
+            raise ValueError(
+                "The failure must occur before the prediction horizon to measure "
+                "positive prediction windows."
+            )
         return self
 
 
@@ -100,6 +133,7 @@ async def execute_experiment(experiment_id: str, request: ExperimentRequest) -> 
     order_rng = random.Random(order_seed)
     rows: list[dict[str, object]] = []
     trial_orders: list[list[str]] = []
+    scenarios = build_experiment_scenarios(request.workload_type)
     original_settings = settings_store.get()
     changes = {
         key: value for key, value in {
@@ -120,13 +154,23 @@ async def execute_experiment(experiment_id: str, request: ExperimentRequest) -> 
     try:
         database.execute("UPDATE experiments SET status='running' WHERE id=?", (experiment_id,))
         for repetition in range(request.repetitions):
-            trial_order = list(policies)
-            order_rng.shuffle(trial_order)
+            trials = [
+                (policy, scenario_name, scenario_workload)
+                for policy in policies
+                for scenario_name, scenario_workload in scenarios
+            ]
+            order_rng.shuffle(trials)
+            trial_order = [
+                f"{policy}:{scenario_name}"
+                for policy, scenario_name, _ in trials
+            ]
             trial_orders.append(trial_order)
-            for trial_position, policy in enumerate(trial_order, start=1):
+            for trial_position, (policy, scenario_name, scenario_workload) in enumerate(
+                trials, start=1
+            ):
                 worker_duration = min(3600, duration + 60)
                 child = process_manager.start(
-                    workload.model_copy(update={
+                    scenario_workload.model_copy(update={
                         "policy": policy,
                         "duration_s": worker_duration,
                     })
@@ -166,7 +210,8 @@ async def execute_experiment(experiment_id: str, request: ExperimentRequest) -> 
                     "trial_position": trial_position,
                     "policy_order_seed": order_seed,
                     "policy": policy,
-                    "workload_type": workload.workload_type,
+                    "scenario": scenario_name,
+                    "workload_type": scenario_workload.workload_type,
                     "process_id": process_id,
                     "metrics": metrics,
                     "configuration": {
@@ -184,8 +229,16 @@ async def execute_experiment(experiment_id: str, request: ExperimentRequest) -> 
             "experiment_id": experiment_id,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "software_version": "0.1.0",
+            "prediction_model": cfg.prediction_model,
+            "scenario_design": {
+                "method": "paired healthy control and failure scenario for every policy and repetition",
+                "scenarios": [
+                    {"scenario": name, "workload_type": scenario.workload_type}
+                    for name, scenario in scenarios
+                ],
+            },
             "randomization": {
-                "method": "independently shuffled policy order within each repetition",
+                "method": "independently shuffled policy and scenario order within each repetition",
                 "seed": order_seed,
                 "trial_orders": trial_orders,
             },
@@ -311,9 +364,12 @@ def export_experiment(experiment_id: str):
     writer = csv.DictWriter(
         stream,
         fieldnames=[
-            "experiment_id", "policy", "repetition", "trial_position",
-            "policy_order_seed", "workload_type", "process_id",
+            "experiment_id", "policy", "scenario", "repetition", "trial_position",
+            "policy_order_seed", "prediction_model", "workload_type", "process_id",
             "sample_count", "prediction_sample_count", "labeled_prediction_samples",
+            "prediction_model_counts", "logistic_prediction_count",
+            "mean_logistic_risk_score", "true_positives", "false_positives",
+            "false_negatives", "true_negatives",
             "prediction_horizon_s", "precision", "recall", "f1",
             "false_positive_rate", "first_early_warning_lead_time_s",
             "recovery_attempts", "successful_recoveries", "failed_recoveries",
@@ -329,9 +385,11 @@ def export_experiment(experiment_id: str):
         writer.writerow({
             "experiment_id": experiment_id,
             "policy": run["policy"],
+            "scenario": run.get("scenario"),
             "repetition": run["repetition"],
             "trial_position": run["trial_position"],
             "policy_order_seed": run["policy_order_seed"],
+            "prediction_model": result.get("prediction_model"),
             "workload_type": run["workload_type"],
             "process_id": run["process_id"],
             **{key: metrics.get(key) for key in writer.fieldnames if key in metrics},

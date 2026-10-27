@@ -5,12 +5,16 @@ from unittest.mock import patch
 
 from app.core.database import Database
 from app.experiments.metrics import summarize_run
-from app.api.experiments import summarize_policies
+from app.api.experiments import (
+    ExperimentRequest,
+    build_experiment_scenarios,
+    summarize_policies,
+)
 from app.api.monitoring import get_overview
 from app.monitoring.features import extract_features
 from app.prediction.risk_estimator import estimate_risk
 from app.recovery.decision_engine import choose_action
-from app.schemas import SettingsUpdate, validate_settings_update
+from app.schemas import SettingsUpdate, WorkloadRequest, validate_settings_update
 
 
 class MonitoringTests(unittest.TestCase):
@@ -189,6 +193,70 @@ class RiskAndDecisionTests(unittest.TestCase):
 
 
 class MetricTests(unittest.TestCase):
+    def test_experiment_pairs_healthy_control_with_failure_scenario(self):
+        scenarios = build_experiment_scenarios(
+            WorkloadRequest(workload_type="unresponsive", fault_after_s=12)
+        )
+        self.assertEqual(
+            [(name, workload.workload_type) for name, workload in scenarios],
+            [
+                ("healthy_control", "healthy"),
+                ("failure_scenario", "unresponsive"),
+            ],
+        )
+
+    def test_non_failure_experiment_workload_uses_crash_scenario(self):
+        scenarios = build_experiment_scenarios(
+            WorkloadRequest(workload_type="cpu")
+        )
+        self.assertEqual(scenarios[1][1].workload_type, "crash")
+
+    def test_experiment_requires_horizon_plus_negative_observation_window(self):
+        with self.assertRaises(ValueError):
+            ExperimentRequest(
+                workload_type=WorkloadRequest(
+                    workload_type="crash", fault_after_s=15
+                ),
+                duration_s=32,
+                prediction_horizon=30,
+            )
+        request = ExperimentRequest(
+            workload_type=WorkloadRequest(
+                workload_type="crash", fault_after_s=15
+            ),
+            duration_s=33,
+            prediction_horizon=30,
+        )
+        self.assertEqual(request.duration_s, 33)
+
+    def test_labeled_runs_report_zero_scores_when_no_positive_is_predicted(self):
+        measurements = [
+            {"timestamp": 0.0, "process_state": "running", "responsive": 1},
+            {"timestamp": 5.0, "process_state": "running", "responsive": 1},
+            {"timestamp": 10.0, "process_state": "running", "responsive": 1},
+            {"timestamp": 20.0, "process_state": "failed", "responsive": 0},
+        ]
+        predictions = [
+            {
+                "timestamp": timestamp,
+                "risk_score": 0.2,
+                "model_name": "logistic_regression_sigmoid_group_calibrated",
+            }
+            for timestamp in (0.0, 5.0, 10.0)
+        ]
+        result = summarize_run(
+            measurements, predictions, [], horizon_s=10, risk_threshold=0.65
+        )
+        self.assertEqual(result["labeled_prediction_samples"], 3)
+        self.assertEqual(result["true_negatives"], 2)
+        self.assertEqual(result["false_negatives"], 1)
+        self.assertEqual(result["precision"], 0.0)
+        self.assertEqual(result["recall"], 0.0)
+        self.assertEqual(result["f1"], 0.0)
+        self.assertEqual(result["false_positive_rate"], 0.0)
+        self.assertEqual(result["logistic_prediction_count"], 3)
+        self.assertAlmostEqual(result["mean_logistic_risk_score"], 0.2)
+
     def test_policy_summary_reports_mean_spread_and_available_count(self):
         rows = [
             {"policy": "threshold", "metrics": {"f1": 0.4, "precision": None}},
@@ -200,6 +268,26 @@ class MetricTests(unittest.TestCase):
         self.assertAlmostEqual(summary["metrics"]["f1"]["std"], 0.1)
         self.assertEqual(summary["metrics"]["precision"]["n"], 1)
         self.assertEqual(summary["metrics"]["precision"]["std"], 0.0)
+
+    def test_policy_summary_keeps_control_and_failure_conditions_separate(self):
+        rows = [
+            {
+                "policy": "preemptguard",
+                "scenario": "healthy_control",
+                "metrics": {"f1": 0.0},
+            },
+            {
+                "policy": "preemptguard",
+                "scenario": "failure_scenario",
+                "metrics": {"f1": 0.5},
+            },
+        ]
+        summaries = summarize_policies(rows)
+        self.assertEqual(
+            [(item["scenario"], item["run_count"], item["metrics"]["f1"]["mean"])
+             for item in summaries],
+            [("healthy_control", 1, 0.0), ("failure_scenario", 1, 0.5)],
+        )
 
     def test_metrics_mark_unlabeled_runs_as_unavailable(self):
         result = summarize_run([], [], [], horizon_s=30)

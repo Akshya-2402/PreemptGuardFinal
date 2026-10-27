@@ -1,11 +1,17 @@
 import argparse
 import json
 import math
+import mmap
 import os
 import time
 from pathlib import Path
 
+import psutil
+
 from app.workloads.files import atomic_replace_with_retry
+
+
+PROCESS_MEMORY = psutil.Process()
 
 
 def read_control(path: Path) -> dict[str, object]:
@@ -17,11 +23,14 @@ def read_control(path: Path) -> dict[str, object]:
 
 def write_heartbeat(path: Path, operation_status: str = "succeeded") -> None:
     temporary = path.with_suffix(".tmp")
+    memory = PROCESS_MEMORY.memory_info()
     temporary.write_text(
         json.dumps({
             "timestamp": time.time(),
             "operation_status": operation_status,
             "cpu_time_s": time.process_time(),
+            "rss_mb": memory.rss / (1024 * 1024),
+            "memory_percent": PROCESS_MEMORY.memory_percent(),
         }),
         encoding="utf-8",
     )
@@ -65,7 +74,10 @@ def run(
                 value = math.sin(value + 1.0)
         if workload_type in ("memory", "cpu_memory") and allocated_mb < memory_limit_mb:
             amount = min(memory_rate_mb_s, memory_limit_mb - allocated_mb, 2.0)
-            allocations.append(bytearray(int(amount * 1024 * 1024)))
+            allocation = bytearray(int(amount * 1024 * 1024))
+            for offset in range(0, len(allocation), mmap.PAGESIZE):
+                allocation[offset] = 1
+            allocations.append(allocation)
             allocated_mb += amount
         is_unresponsive = (
             workload_type == "unresponsive"

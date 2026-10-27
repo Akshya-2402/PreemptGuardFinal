@@ -256,6 +256,18 @@ class ProcessManager:
                 heartbeat_time = float(heartbeat_data["timestamp"])
                 heartbeat_age = max(0.0, now - heartbeat_time)
                 operation_status = heartbeat_data.get("operation_status")
+                worker_rss = heartbeat_data.get("rss_mb")
+                worker_memory_percent = heartbeat_data.get("memory_percent")
+                if (
+                    isinstance(worker_rss, (int, float))
+                    and not isinstance(worker_rss, bool)
+                ):
+                    memory = float(worker_rss)
+                if (
+                    isinstance(worker_memory_percent, (int, float))
+                    and not isinstance(worker_memory_percent, bool)
+                ):
+                    memory_percent = float(worker_memory_percent)
                 cpu_time = heartbeat_data.get("cpu_time_s")
                 if isinstance(cpu_time, (int, float)) and not isinstance(cpu_time, bool):
                     heartbeat_cpu_time = float(cpu_time)

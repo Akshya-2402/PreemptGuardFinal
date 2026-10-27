@@ -70,11 +70,20 @@ def summarize_run(
             false_positive += 1
         else:
             true_negative += 1
-    precision = true_positive / (true_positive + false_positive) if true_positive + false_positive else None
-    recall = true_positive / (true_positive + false_negative) if true_positive + false_negative else None
+    predicted_positives = true_positive + false_positive
+    actual_positives = true_positive + false_negative
+    precision = (
+        true_positive / predicted_positives
+        if predicted_positives else (0.0 if labeled else None)
+    )
+    recall = (
+        true_positive / actual_positives
+        if actual_positives else (0.0 if labeled else None)
+    )
     f1 = (
         2 * precision * recall / (precision + recall)
-        if precision is not None and recall is not None and precision + recall else None
+        if precision is not None and recall is not None and precision + recall
+        else (0.0 if labeled else None)
     )
     durations = [
         float(item["duration_s"]) for item in recoveries
@@ -111,10 +120,24 @@ def summarize_run(
         float(item["memory_mb"]) for item in monitoring_samples
         if item["memory_mb"] is not None
     ]
+    logistic_predictions = [
+        item for item in predictions
+        if str(item.get("model_name", "")).startswith("logistic_regression")
+    ]
+    prediction_model_counts: dict[str, int] = {}
+    for item in predictions:
+        model_name = str(item.get("model_name", "unknown"))
+        prediction_model_counts[model_name] = prediction_model_counts.get(model_name, 0) + 1
     successful_recoveries = sum(item["status"] == "healthy" for item in recoveries)
     return {
         "sample_count": len(measurements),
         "prediction_sample_count": len(predictions),
+        "prediction_model_counts": prediction_model_counts,
+        "logistic_prediction_count": len(logistic_predictions),
+        "mean_logistic_risk_score": (
+            mean(float(item["risk_score"]) for item in logistic_predictions)
+            if logistic_predictions else None
+        ),
         "labeled_prediction_samples": labeled,
         "precision": precision,
         "recall": recall,

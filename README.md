@@ -44,7 +44,7 @@ The backend is organized under `backend/app/`: API routes, configuration/databas
 ## Implemented functionality
 
 - Locally launched `healthy`, `cpu`, `memory`, `unresponsive`, `crash`, `intermittent`, and `repeated_failure` child workloads. CPU busy work is time-sliced; simulated memory growth is capped (default 64 MB, configurable up to 256 MB).
-- Measurements of PID, process CPU percentage, RSS memory in MB, memory percentage, process state, heartbeat age, uptime, and memory growth. CPU use comes from worker-reported process CPU time when available (with `psutil` as a fallback); RSS is resident set size and varies by OS/Python allocator.
+- Measurements of PID, process CPU percentage, RSS memory in MB, memory percentage, process state, heartbeat age, uptime, and memory growth. CPU use comes from worker-reported process CPU time when available (with `psutil` as a fallback); RSS and memory percentage are reported by the worker because Windows parent-process sampling may not reflect its current working set.
 - Rolling features: current/mean CPU, CPU trend, recent memory growth/acceleration, missed heartbeats, abnormal samples, and history length.
 - A transparent rule-based risk score and an evidence-amount confidence estimate. A process that exits is assigned score 1.0. These scores are not calibrated probabilities.
 - Optional logistic-regression prediction of a recorded exit or sustained heartbeat failure within the configured future horizon. The heuristic remains the default baseline; the model uses sigmoid calibration fitted on group-disjoint training folds, and no model is shipped.
@@ -86,6 +86,8 @@ py -m venv .venv
 .\.venv\Scripts\Activate.ps1
 py -m pip install -r requirements.txt
 ```
+
+If you run tests directly from the repo root with `pytest`, the backend package is auto-configured so `app` resolves correctly.
 
 Install the frontend dependencies:
 
@@ -151,13 +153,13 @@ The initial decision engine compares transparent relative costs (not currency or
 ## Experiment metrics and interpretation
 
 - **Prediction labels:** positive when a recorded exit or the beginning of three consecutive unresponsive samples occurs within the future horizon. Negative labels require measurements covering the full horizon; otherwise the window is censored. Features use only measurements available at the prediction timestamp.
-- **Precision / recall / F1:** calculated over fully labelled prediction samples; **false-positive rate** is FP/(FP+TN). These per-sample counts are not independent because adjacent time windows overlap.
+- **Precision / recall / F1:** calculated over fully labelled prediction samples; when a denominator is zero but labels exist, the experiment uses the documented `zero_division=0` convention. **False-positive rate** is FP/(FP+TN). These per-sample counts are not independent because adjacent time windows overlap.
 - **Prediction lead time:** time from the first qualifying warning to an observed failure event. It is unavailable when no true-positive warning is measured.
 - **Recovery success rate:** verified healthy recoveries divided by all attempts. Recovery time runs from restart initiation through verification; total downtime is the sum of those durations.
 - **Unnecessary restart:** counted only when the replacement is observed responsive and failure-free for the complete configured post-recovery interval. This is an operational proxy, not a counterfactual; unassessed attempts remain explicitly reported.
 - **Monitoring overhead:** mean backend-process CPU percent and RSS memory over the recorded experiment interval. This includes API and other backend activity.
 
-Experiments use the same workload configuration for each policy, repeated sequentially. Run at least several repetitions for a comparison and account for the fixed policy order and host scheduling when interpreting results. Missing labels or observation periods remain unavailable rather than being fabricated.
+Experiments pair a healthy control with the selected failure scenario for every policy and repetition, with policy/scenario order randomized. The observation duration must exceed the prediction horizon by at least three sampling intervals; the failure must occur within the horizon. The measured-run table reports which predictor ran, logistic score count/mean, label coverage, and confusion counts alongside performance metrics. Metrics that are mathematically undefined remain unavailable rather than being fabricated. Each repetition contains ten workload runs, so allow for the added runtime.
 
 Example PowerShell run with three complete repetitions across all five policies:
 
@@ -165,7 +167,7 @@ Example PowerShell run with three complete repetitions across all five policies:
 $base = 'http://127.0.0.1:8000/api'
 $started = Invoke-RestMethod -Method Post -Uri "$base/experiments" `
   -ContentType 'application/json' `
-  -Body '{"workload_type":{"workload_type":"crash","fault_after_s":15},"duration_s":20,"repetitions":3,"randomization_seed":42,"prediction_horizon":30}'
+  -Body '{"workload_type":{"workload_type":"crash","fault_after_s":15},"duration_s":40,"repetitions":3,"randomization_seed":42,"prediction_horizon":30}'
 $id = $started.experiment_id
 do {
   Start-Sleep -Seconds 2

@@ -163,6 +163,33 @@ class ManagedRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(process["restart_count"], 0)
         self.assertEqual(process["status"], "running")
 
+    async def test_memory_worker_rss_increases_as_allocated_pages_are_touched(self):
+        managed = self.manager.start(WorkloadRequest(
+            workload_type="memory",
+            policy="fixed",
+            duration_s=40,
+            memory_rate_mb_s=4.0,
+        ))
+        deadline = time.monotonic() + 15
+        rss_samples = []
+        while time.monotonic() < deadline:
+            await self.manager.sample_all()
+            rows = self.db.query(
+                "SELECT memory_mb FROM measurements WHERE process_id=? "
+                "AND memory_mb IS NOT NULL ORDER BY timestamp",
+                (managed["id"],),
+            )
+            rss_samples = [row["memory_mb"] for row in rows]
+            if rss_samples and max(rss_samples) - min(rss_samples) >= 8.0:
+                break
+            await asyncio.sleep(0.5)
+
+        self.assertGreaterEqual(
+            max(rss_samples) - min(rss_samples),
+            8.0,
+            "RSS did not reflect the memory workload's touched allocations",
+        )
+
     async def test_uncertain_recheck_reschedules_after_gathering_new_observation(self):
         settings_store.update({
             "recheck_interval": 0.5,

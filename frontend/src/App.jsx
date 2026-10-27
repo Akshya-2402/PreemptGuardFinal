@@ -38,8 +38,8 @@ function App() {
   const [workload, setWorkload] = useState("healthy");
   const [policy, setPolicy] = useState("preemptguard");
   const [experimentType, setExperimentType] = useState("crash");
-  const [experimentDuration, setExperimentDuration] = useState(15);
-  const [experimentRepetitions, setExperimentRepetitions] = useState(2);
+  const [experimentDuration, setExperimentDuration] = useState(40);
+  const [experimentRepetitions, setExperimentRepetitions] = useState(1);
   const [experimentSeed, setExperimentSeed] = useState(42);
   const [experimentHorizon, setExperimentHorizon] = useState(30);
   const [experiment, setExperiment] = useState(null);
@@ -131,11 +131,15 @@ function App() {
       const created = await request("/experiments", {
         method: "POST",
         body: JSON.stringify({
-          workload_type: { workload_type: experimentType, fault_after_s: Math.max(3, experimentDuration - 3) },
+          workload_type: {
+            workload_type: experimentType,
+            fault_after_s: Math.min(15, Math.max(3, Number(experimentHorizon) - 1)),
+          },
           duration_s: Number(experimentDuration),
           repetitions: Number(experimentRepetitions),
           randomization_seed: Number(experimentSeed),
           prediction_horizon: Number(experimentHorizon),
+          sampling_interval: settings?.monitoring_interval || 1,
         }),
       });
       setExperiment({ experiment_id: created.experiment_id, status: created.status });
@@ -215,7 +219,6 @@ function App() {
             <div className="panel-heading"><div><span className="eyebrow">MOST RECENT MEASUREMENT PER PROCESS</span><h2>Live CPU and memory observations</h2></div><span className="unit-label">CPU % · memory MB</span></div>
             <div className="chart"><ResponsiveContainer width="100%" height="100%"><LineChart data={chartRows}><CartesianGrid strokeDasharray="3 3" vertical={false} /><XAxis dataKey="process_id" tickFormatter={(value) => value.slice(0, 6)} /><YAxis /><Tooltip labelFormatter={(label) => `Process ${label}`} /><Line dataKey="cpu_percent" name="CPU %" stroke="#3577d4" connectNulls dot={false} /><Line dataKey="memory_mb" name="Memory MB" stroke="#1a9b80" connectNulls dot={false} /></LineChart></ResponsiveContainer></div>
           </div>
-          <div className="panel"><div className="panel-heading"><div><span className="eyebrow">ACTIVE OWNED WORKLOADS</span><h2>Process health</h2></div><button className="button" onClick={() => setPage("Simulator")}>Launch workload</button></div><ProcessTable items={processes} onSelect={setSelected} onRun={run} busy={busy} /></div>
         </section>}
 
         {page === "Processes" && <section>
@@ -252,17 +255,25 @@ function App() {
         </section>}
 
         {page === "Experiments" && <section>
-          <p className="lede">Run the same workload conditions under fixed-restart, threshold, and PreemptGuard policies. Results are calculated from recorded process samples; unmeasured metrics stay blank.</p>
+          <p className="lede">Each policy is measured on both a healthy control and a failure scenario. The observation duration must exceed the prediction horizon so negative windows can be labelled. Metrics stay unavailable when the measured outcomes do not support them.</p>
           <form className="panel form-panel" onSubmit={startExperiment}>
             <div className="form-grid">
-              <label>Workload scenario<select value={experimentType} onChange={(event) => setExperimentType(event.target.value)}>
-                {["healthy", "cpu", "cpu_memory", "memory", "unresponsive", "crash", "intermittent", "repeated_failure", "temporary_io"].map((item) => <option key={item} value={item}>{item.replaceAll("_", " ")}</option>)}
+              <label>Failure scenario<select value={experimentType} onChange={(event) => setExperimentType(event.target.value)}>
+                {["crash", "repeated_failure", "unresponsive", "intermittent"].map((item) => <option key={item} value={item}>{item.replaceAll("_", " ")}</option>)}
               </select></label>
-              <label>Observation duration (seconds)<input type="number" min="5" max="3600" value={experimentDuration} onChange={(event) => setExperimentDuration(event.target.value)} /></label>
+              <label>Observation duration (seconds)<input type="number" min={Number(experimentHorizon) + 3 * (settings?.monitoring_interval || 1)} max="3600" value={experimentDuration} onChange={(event) => setExperimentDuration(event.target.value)} /></label>
               <label>Complete-run repetitions<input type="number" min="1" max="10" value={experimentRepetitions} onChange={(event) => setExperimentRepetitions(event.target.value)} /></label>
               <label>Policy-order randomization seed<input type="number" min="0" max="4294967295" value={experimentSeed} onChange={(event) => setExperimentSeed(event.target.value)} /></label>
-              <label>Prediction horizon (seconds)<input type="number" min="1" max="600" value={experimentHorizon} onChange={(event) => setExperimentHorizon(event.target.value)} /></label>
+              <label>Prediction horizon (seconds)<input type="number" min="4" max="600" value={experimentHorizon} onChange={(event) => {
+                const horizon = Number(event.target.value);
+                setExperimentHorizon(event.target.value);
+                setExperimentDuration((duration) => Math.max(
+                  Number(duration),
+                  horizon + 3 * (settings?.monitoring_interval || 1),
+                ));
+              }} /></label>
             </div>
+            <p className="help-text">Each repetition measures 10 runs (five policies × two workload conditions). A 40-second run with one repetition takes about 7 minutes. The selected logistic model is used for every prediction in the measured runs.</p>
             <button className="button" disabled={busy || experiment?.status === "running"}>Run randomized repeated comparison</button>
           </form>
           {experiment && <ExperimentResult experiment={experiment} />}
@@ -332,7 +343,7 @@ function ProcessDetails({ process, history }) {
   }));
   return <div className="panel detail-panel"><div className="panel-heading"><div><span className="eyebrow">PROCESS DETAIL</span><h2>{process.name} · PID {process.pid || "—"}</h2></div><RiskBadge category={process.prediction?.category} /></div>
     <p className="help-text">Observed CPU/memory samples and predicted risk are separate series. Raw memory uses process RSS reported by psutil.</p>
-    <div className="chart"><ResponsiveContainer width="100%" height="100%"><LineChart data={data}><CartesianGrid strokeDasharray="3 3" vertical={false} /><XAxis dataKey="at" /><YAxis /><Tooltip /><Line dataKey="cpu_percent" name="Observed CPU %" stroke="#3577d4" dot={false} connectNulls /><Line dataKey="memory_mb" name="Observed RSS MB" stroke="#1a9b80" dot={false} connectNulls /></LineChart></ResponsiveContainer></div>
+    <div className="chart"><ResponsiveContainer width="100%" height="100%"><LineChart data={data}><CartesianGrid strokeDasharray="3 3" vertical={false} /><XAxis dataKey="at" /><YAxis yAxisId="cpu" domain={[0, 100]} /><YAxis yAxisId="rss" orientation="right" domain={["auto", "auto"]} /><Tooltip /><Line yAxisId="cpu" dataKey="cpu_percent" name="Observed CPU %" stroke="#3577d4" dot={false} connectNulls /><Line yAxisId="rss" dataKey="memory_mb" name="Observed RSS MB" stroke="#1a9b80" dot={false} connectNulls /></LineChart></ResponsiveContainer></div>
     <div className="chart risk-chart"><ResponsiveContainer width="100%" height="100%"><LineChart data={history?.predictions || []}><CartesianGrid strokeDasharray="3 3" vertical={false} /><XAxis dataKey="timestamp" tickFormatter={(value) => new Date(value * 1000).toLocaleTimeString()} /><YAxis domain={[0, 1]} /><Tooltip /><Line dataKey="risk_score" name="Predicted risk score" stroke="#d67836" dot={false} /></LineChart></ResponsiveContainer></div>
     <h3>Latest prediction explanation</h3><p>{process.prediction?.contributors?.join(", ") || "No factors available yet."}</p>
     <h3>Recent decisions</h3><ul className="compact-list">{(history?.decisions || []).slice(-5).reverse().map((item) => <li key={item.id}><b>{item.action}</b> — {item.reason}</li>)}</ul>
@@ -343,15 +354,15 @@ function ExperimentResult({ experiment }) {
   const runs = experiment.results?.comparison || [];
   const summaries = experiment.results?.policy_summary || [];
   return <div className="panel"><div className="panel-heading"><div><span className="eyebrow">MEASURED RUN</span><h2>{experiment.status} · {experiment.experiment_id}</h2></div>{experiment.status === "completed" && <a className="button link-button" href={`${API}/experiments/${experiment.experiment_id}/export.csv`}>Export CSV</a>}</div>
-    {experiment.results?.randomization && <p className="help-text">Policy order was independently randomized per repetition (seed {experiment.results.randomization.seed}).</p>}
-    {summaries.length > 0 && <><h3>Across-repetition summary (mean ± standard deviation)</h3><div className="table-wrap"><table><thead><tr><th>Policy</th><th>Runs</th><th>F1</th><th>Precision</th><th>Recall</th><th>FPR</th><th>Recovery success</th><th>Downtime</th></tr></thead><tbody>
-      {summaries.map((summary) => <tr key={summary.policy}><td>{summary.policy}</td><td>{summary.run_count}</td><td>{formatSummaryMetric(summary.metrics.f1)}</td><td>{formatSummaryMetric(summary.metrics.precision)}</td><td>{formatSummaryMetric(summary.metrics.recall)}</td><td>{formatSummaryMetric(summary.metrics.false_positive_rate)}</td><td>{formatSummaryMetric(summary.metrics.recovery_success_rate)}</td><td>{formatSummaryMetric(summary.metrics.total_downtime_s)} s</td></tr>)}
+    {experiment.results?.randomization && <p className="help-text">Policy and scenario order was independently randomized per repetition (seed {experiment.results.randomization.seed}). The active predictor was {experiment.results.prediction_model || "not recorded"}.</p>}
+    {summaries.length > 0 && <><h3>Across-repetition summary (mean ± standard deviation)</h3><div className="table-wrap"><table><thead><tr><th>Policy</th><th>Condition</th><th>Runs</th><th>F1</th><th>Precision</th><th>Recall</th><th>FPR</th><th>Recovery success</th><th>Downtime</th></tr></thead><tbody>
+      {summaries.map((summary) => <tr key={`${summary.policy}-${summary.scenario}`}><td>{summary.policy}</td><td>{summary.scenario || "measured"}</td><td>{summary.run_count}</td><td>{formatSummaryMetric(summary.metrics.f1)}</td><td>{formatSummaryMetric(summary.metrics.precision)}</td><td>{formatSummaryMetric(summary.metrics.recall)}</td><td>{formatSummaryMetric(summary.metrics.false_positive_rate)}</td><td>{formatSummaryMetric(summary.metrics.recovery_success_rate)}</td><td>{formatSummaryMetric(summary.metrics.total_downtime_s)} s</td></tr>)}
     </tbody></table></div></>}
-    {runs.length > 0 ? <div className="table-wrap"><table><thead><tr><th>Policy / ablation</th><th>Samples</th><th>Precision</th><th>Recall</th><th>F1</th><th>False-positive rate</th><th>First warning lead</th><th>Recovery success</th><th>Unnecessary restarts</th><th>Mean / median recovery</th><th>Downtime</th><th>Monitor CPU / RSS</th></tr></thead><tbody>
-      {runs.map((run) => <tr key={run.process_id}><td>{run.policy}</td><td>{run.metrics.sample_count}</td><td>{formatMetric(run.metrics.precision)}</td><td>{formatMetric(run.metrics.recall)}</td><td>{formatMetric(run.metrics.f1)}</td><td>{formatMetric(run.metrics.false_positive_rate)}</td><td>{formatSeconds(run.metrics.first_early_warning_lead_time_s)}</td><td>{formatMetric(run.metrics.recovery_success_rate)}</td><td>{run.metrics.unnecessary_restarts == null ? `— (${run.metrics.unassessed_unnecessary_restart_count} unassessed)` : run.metrics.unnecessary_restarts}</td><td>{formatSeconds(run.metrics.mean_recovery_time_s)} / {formatSeconds(run.metrics.median_recovery_time_s)}</td><td>{formatSeconds(run.metrics.total_downtime_s)}</td><td>{formatMetric(run.metrics.cpu_overhead_percent)}% / {formatMetric(run.metrics.memory_overhead_mb)} MB</td></tr>)}
+    {runs.length > 0 ? <div className="table-wrap"><table><thead><tr><th>Policy</th><th>Condition</th><th>Model samples / mean score</th><th>Labelled windows</th><th>TP / FP / FN / TN</th><th>Precision</th><th>Recall</th><th>F1</th><th>False-positive rate</th><th>First warning lead</th><th>Recovery success</th><th>Unnecessary restarts</th><th>Mean / median recovery</th><th>Downtime</th><th>Monitor CPU / RSS</th></tr></thead><tbody>
+      {runs.map((run) => <tr key={run.process_id}><td>{run.policy}</td><td>{run.scenario || "measured"} · {run.workload_type.replaceAll("_", " ")}</td><td>{formatPredictorOutput(run.metrics)}</td><td>{run.metrics.labeled_prediction_samples} / {run.metrics.prediction_sample_count}</td><td>{run.metrics.true_positives} / {run.metrics.false_positives} / {run.metrics.false_negatives} / {run.metrics.true_negatives}</td><td>{formatMetric(run.metrics.precision)}</td><td>{formatMetric(run.metrics.recall)}</td><td>{formatMetric(run.metrics.f1)}</td><td>{formatMetric(run.metrics.false_positive_rate)}</td><td>{formatSeconds(run.metrics.first_early_warning_lead_time_s)}</td><td>{formatMetric(run.metrics.recovery_success_rate)}</td><td>{run.metrics.unnecessary_restarts == null ? `— (${run.metrics.unassessed_unnecessary_restart_count} unassessed)` : run.metrics.unnecessary_restarts}</td><td>{formatSeconds(run.metrics.mean_recovery_time_s)} / {formatSeconds(run.metrics.median_recovery_time_s)}</td><td>{formatSeconds(run.metrics.total_downtime_s)}</td><td>{formatMetric(run.metrics.cpu_overhead_percent)}% / {formatMetric(run.metrics.memory_overhead_mb)} MB</td></tr>)}
     </tbody></table></div> : <p className="help-text">Experiment is {experiment.status}. Results will appear when measured runs finish.</p>}
     {experiment.results?.ablation_study && <div className="ablation-list"><h3>Ablation variants</h3>{experiment.results.ablation_study.comparisons?.map((item) => <p key={item.policy}><b>{item.component}:</b> {item.runs.length} measured run(s), policy {item.policy}.</p>)}</div>}
-    {runs.length > 0 && <p className="help-text">Prediction metrics use only fully observed horizon windows; recovery time is restart initiation through verification. Unnecessary restarts require the full post-recovery verification interval and measure an operational proxy, not a counterfactual. Overhead is the backend process's sampled CPU/RSS. Policy means and standard deviations describe repeated runs, not confidence intervals.</p>}
+    {runs.length > 0 && <p className="help-text">Prediction metrics use fully observed horizon windows. Precision, recall, and F1 use a zero_division=0 convention when labelled samples exist but the model makes no positive predictions; they remain unavailable only when there are no labelled windows. Recovery metrics require a measured recovery attempt. Unnecessary restarts require the full post-recovery observation interval. Overhead is sampled from the backend process. Policy means and standard deviations describe measured runs, not confidence intervals.</p>}
   </div>;
 }
 
@@ -383,6 +394,16 @@ function formatMetric(value) {
 function formatSummaryMetric(metric) {
   if (!metric || metric.mean == null) return "—";
   return `${Number(metric.mean).toFixed(3)} ± ${Number(metric.std).toFixed(3)} (n=${metric.n})`;
+}
+function formatPredictorOutput(metrics) {
+  if (!metrics.prediction_model_counts) return "Model details not recorded";
+  const models = Object.entries(metrics.prediction_model_counts || {})
+    .map(([name, count]) => `${name}: ${count}`)
+    .join(", ");
+  if (metrics.logistic_prediction_count > 0) {
+    return `${models}; mean logistic score ${formatMetric(metrics.mean_logistic_risk_score)}`;
+  }
+  return models || "No predictions";
 }
 function formatSeconds(value) {
   return value == null ? "—" : `${Number(value).toFixed(2)}s`;
