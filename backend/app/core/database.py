@@ -104,6 +104,69 @@ CREATE TABLE IF NOT EXISTS monitor_overhead (
     memory_mb REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_monitor_overhead_time ON monitor_overhead(timestamp);
+CREATE TABLE IF NOT EXISTS host_process_samples (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    pid INTEGER NOT NULL,
+    process_started_at REAL,
+    sampled_at REAL NOT NULL,
+    name TEXT NOT NULL,
+    state TEXT NOT NULL,
+    cpu_percent REAL,
+    memory_mb REAL,
+    memory_percent REAL,
+    growth_mb_s REAL,
+    risk_score REAL,
+    risk_category TEXT NOT NULL,
+    health TEXT NOT NULL,
+    risk_evidence_json TEXT NOT NULL,
+    recommended_action TEXT NOT NULL,
+    recovery_method TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_host_process_samples_identity_time
+    ON host_process_samples(pid, process_started_at, sampled_at);
+CREATE TABLE IF NOT EXISTS host_recovery_feedback (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    pid INTEGER NOT NULL,
+    process_started_at REAL NOT NULL,
+    process_name TEXT NOT NULL,
+    action TEXT NOT NULL,
+    helped INTEGER CHECK(helped IS NULL OR helped IN (0,1)),
+    action_run_id INTEGER NOT NULL UNIQUE,
+    features_json TEXT NOT NULL,
+    source TEXT NOT NULL,
+    created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_host_recovery_feedback_action_time
+    ON host_recovery_feedback(action, created_at);
+CREATE TABLE IF NOT EXISTS host_action_consents (
+    pid INTEGER NOT NULL,
+    process_started_at REAL NOT NULL,
+    action TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    PRIMARY KEY(pid, process_started_at, action)
+);
+CREATE TABLE IF NOT EXISTS host_action_configs (
+    pid INTEGER NOT NULL,
+    process_started_at REAL NOT NULL,
+    config_json TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    PRIMARY KEY(pid, process_started_at)
+);
+CREATE TABLE IF NOT EXISTS host_action_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    pid INTEGER NOT NULL,
+    process_started_at REAL NOT NULL,
+    process_name TEXT NOT NULL,
+    action TEXT NOT NULL,
+    status TEXT NOT NULL,
+    details TEXT NOT NULL,
+    features_json TEXT NOT NULL,
+    retry_of INTEGER,
+    duration_s REAL,
+    created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_host_action_runs_identity_time
+    ON host_action_runs(pid, process_started_at, created_at);
 """
 
 
@@ -115,6 +178,18 @@ class Database:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as connection:
             connection.executescript(SCHEMA)
+            feedback_columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(host_recovery_feedback)")
+            }
+            if "action_run_id" not in feedback_columns:
+                connection.execute(
+                    "ALTER TABLE host_recovery_feedback ADD COLUMN action_run_id INTEGER"
+                )
+                connection.execute(
+                    "CREATE UNIQUE INDEX idx_host_recovery_feedback_action_run "
+                    "ON host_recovery_feedback(action_run_id)"
+                )
             columns = {
                 row["name"] for row in connection.execute("PRAGMA table_info(decisions)")
             }
@@ -135,6 +210,13 @@ class Database:
                 )
             if "operation_status" not in measurement_columns:
                 connection.execute("ALTER TABLE measurements ADD COLUMN operation_status TEXT")
+            host_action_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(host_action_runs)")
+            }
+            if "duration_s" not in host_action_columns:
+                connection.execute(
+                    "ALTER TABLE host_action_runs ADD COLUMN duration_s REAL"
+                )
             prediction_columns = {
                 row["name"] for row in connection.execute("PRAGMA table_info(predictions)")
             }
@@ -164,6 +246,9 @@ class Database:
                 connection.execute(
                     "ALTER TABLE recovery_attempts ADD COLUMN verification_period_s REAL"
                 )
+            connection.execute(
+                "DELETE FROM app_settings WHERE key='prediction_model'"
+            )
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
@@ -188,6 +273,10 @@ class Database:
         with self.connect() as connection:
             rows = connection.execute(sql, tuple(parameters)).fetchall()
             return [dict(row) for row in rows]
+
+    def execute_many(self, sql: str, parameters: Iterable[Iterable[Any]]) -> None:
+        with self.connect() as connection:
+            connection.executemany(sql, parameters)
 
     def store_json(self, value: Any) -> str:
         return json.dumps(value, separators=(",", ":"), allow_nan=False)

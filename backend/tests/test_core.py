@@ -1,7 +1,10 @@
 import unittest
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
+
+import psutil
 
 from app.core.database import Database
 from app.experiments.metrics import summarize_run
@@ -12,12 +15,135 @@ from app.api.experiments import (
 )
 from app.api.monitoring import get_overview
 from app.monitoring.features import extract_features
+from app.monitoring.system_processes import SystemProcessMonitor, assess_process
 from app.prediction.risk_estimator import estimate_risk
 from app.recovery.decision_engine import choose_action
 from app.schemas import SettingsUpdate, WorkloadRequest, validate_settings_update
 
 
 class MonitoringTests(unittest.TestCase):
+    def test_system_process_sampling_calculates_rss_growth(self):
+        def fake_process(rss):
+            return SimpleNamespace(info={
+                "pid": 123,
+                "name": "sample-app",
+                "create_time": 1.0,
+                "status": psutil.STATUS_RUNNING,
+                "cpu_percent": 40.0,
+                "memory_info": SimpleNamespace(rss=rss * 1024 * 1024),
+            })
+
+        monitor = SystemProcessMonitor()
+        monitor._logical_cpu_count = 2
+        monitor._total_memory = 1000 * 1024 * 1024
+        with (
+            patch(
+                "app.monitoring.system_processes.psutil.process_iter",
+                side_effect=[[fake_process(100)], [fake_process(106)]],
+            ),
+            patch("app.monitoring.system_processes.time.time", side_effect=[100.0, 102.0]),
+        ):
+            monitor.refresh()
+            first = monitor.snapshot()["processes"][0]
+            monitor.refresh()
+            second = monitor.snapshot()["processes"][0]
+
+        self.assertIsNone(first["growth_mb_s"])
+        self.assertAlmostEqual(second["growth_mb_s"], 3.0)
+        self.assertEqual(second["memory_mb"], 106.0)
+        self.assertEqual(second["risk_category"], "Moderate")
+        self.assertIn("Resident memory is growing", second["risk_evidence"])
+
+    def test_system_process_samples_persist_locally(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        db = Database(Path(temporary.name) / "host-history.sqlite3")
+        db.initialize()
+        fake = SimpleNamespace(info={
+            "pid": 321,
+            "name": "sample-app",
+            "create_time": 10.0,
+            "status": psutil.STATUS_RUNNING,
+            "cpu_percent": 12.5,
+            "memory_info": SimpleNamespace(rss=40 * 1024 * 1024),
+        })
+        monitor = SystemProcessMonitor(db)
+        with (
+            patch("app.monitoring.system_processes.psutil.process_iter", return_value=[fake]),
+            patch("app.monitoring.system_processes.time.time", return_value=100.0),
+        ):
+            monitor.refresh()
+
+        samples = db.query(
+            "SELECT * FROM host_process_samples WHERE pid=? AND process_started_at=?",
+            (321, 10.0),
+        )
+        self.assertEqual(len(samples), 1)
+        self.assertEqual(samples[0]["name"], "sample-app")
+        self.assertEqual(samples[0]["memory_mb"], 40.0)
+        self.assertNotIn("command_line", samples[0])
+
+    def test_host_recovery_does_not_run_without_selected_live_statistics(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        db = Database(Path(temporary.name) / "host-history.sqlite3")
+        db.initialize()
+        db.execute(
+            """INSERT INTO host_action_consents
+            (pid,process_started_at,action,created_at) VALUES(?,?,?,?)""",
+            (321, 10.0, "resume", 1.0),
+        )
+        fake = SimpleNamespace(info={
+            "pid": 321,
+            "name": "sample-app",
+            "create_time": 10.0,
+            "status": psutil.STATUS_STOPPED,
+            "cpu_percent": 0.0,
+            "memory_info": SimpleNamespace(rss=40 * 1024 * 1024),
+        })
+        monitor = SystemProcessMonitor(db)
+        with (
+            patch("app.monitoring.system_processes.psutil.process_iter", return_value=[fake]),
+            patch("app.monitoring.system_processes.time.time", return_value=100.0),
+        ):
+            monitor.refresh()
+
+        self.assertEqual(
+            monitor.snapshot()["processes"][0]["state"],
+            psutil.STATUS_STOPPED,
+        )
+        self.assertEqual(db.query("SELECT * FROM host_action_runs"), [])
+
+    def test_system_process_advice_is_read_only_and_tailored_to_growth(self):
+        assessment = assess_process(
+            state=psutil.STATUS_RUNNING,
+            cpu_percent=10.0,
+            normalized_cpu_percent=5.0,
+            memory_mb=500.0,
+            memory_percent=2.0,
+            growth_mb_s=6.0,
+            high_cpu_samples=0,
+        )
+        self.assertIn("memory trend", assessment["recommended_action"])
+        self.assertIn("gracefully", assessment["recovery_method"])
+
+    def test_system_process_advice_requests_no_action_for_normal_load(self):
+        assessment = assess_process(
+            state=psutil.STATUS_RUNNING,
+            cpu_percent=1.0,
+            normalized_cpu_percent=0.1,
+            memory_mb=20.0,
+            memory_percent=0.1,
+            growth_mb_s=0.0,
+            high_cpu_samples=0,
+        )
+        self.assertEqual(assessment["health"], "Normal")
+        self.assertEqual(assessment["risk_category"], "Low")
+        self.assertEqual(
+            assessment["recommended_action"],
+            "No recovery needed; continue monitoring.",
+        )
+
     def test_overview_counts_only_measured_responsive_processes(self):
         processes = [
             {"status": "running", "metrics": {"responsive": 1}, "prediction": None},
@@ -240,7 +366,7 @@ class MetricTests(unittest.TestCase):
             {
                 "timestamp": timestamp,
                 "risk_score": 0.2,
-                "model_name": "logistic_regression_sigmoid_group_calibrated",
+                "model_name": "rule_based_v1 (uncalibrated risk score)",
             }
             for timestamp in (0.0, 5.0, 10.0)
         ]
@@ -254,8 +380,10 @@ class MetricTests(unittest.TestCase):
         self.assertEqual(result["recall"], 0.0)
         self.assertEqual(result["f1"], 0.0)
         self.assertEqual(result["false_positive_rate"], 0.0)
-        self.assertEqual(result["logistic_prediction_count"], 3)
-        self.assertAlmostEqual(result["mean_logistic_risk_score"], 0.2)
+        self.assertEqual(
+            result["prediction_model_counts"],
+            {"rule_based_v1 (uncalibrated risk score)": 3},
+        )
 
     def test_policy_summary_reports_mean_spread_and_available_count(self):
         rows = [

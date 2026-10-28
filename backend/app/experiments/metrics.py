@@ -120,10 +120,6 @@ def summarize_run(
         float(item["memory_mb"]) for item in monitoring_samples
         if item["memory_mb"] is not None
     ]
-    logistic_predictions = [
-        item for item in predictions
-        if str(item.get("model_name", "")).startswith("logistic_regression")
-    ]
     prediction_model_counts: dict[str, int] = {}
     for item in predictions:
         model_name = str(item.get("model_name", "unknown"))
@@ -133,11 +129,6 @@ def summarize_run(
         "sample_count": len(measurements),
         "prediction_sample_count": len(predictions),
         "prediction_model_counts": prediction_model_counts,
-        "logistic_prediction_count": len(logistic_predictions),
-        "mean_logistic_risk_score": (
-            mean(float(item["risk_score"]) for item in logistic_predictions)
-            if logistic_predictions else None
-        ),
         "labeled_prediction_samples": labeled,
         "precision": precision,
         "recall": recall,

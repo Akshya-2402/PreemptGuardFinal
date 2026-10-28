@@ -1,9 +1,50 @@
+import json
+
 from fastapi import APIRouter
 
 from app.core.database import database
+from app.monitoring.system_processes import system_process_monitor
 from app.workloads.manager import process_manager
 
 router = APIRouter(prefix="/api", tags=["monitoring"])
+
+
+@router.get("/system/processes")
+def get_system_processes():
+    return system_process_monitor.snapshot()
+
+
+@router.get("/system/processes/{pid}/history")
+def get_system_process_history(
+    pid: int,
+    process_started_at: float | None = None,
+    limit: int = 60,
+):
+    if pid < 0:
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=422, detail="pid must be non-negative.")
+    if not 1 <= limit <= 2000:
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=422, detail="limit must be between 1 and 2000.")
+    if process_started_at is None:
+        rows = database.query(
+            """SELECT * FROM host_process_samples WHERE pid=?
+            ORDER BY sampled_at DESC LIMIT ?""",
+            (pid, limit),
+        )
+    else:
+        rows = database.query(
+            """SELECT * FROM host_process_samples
+            WHERE pid=? AND process_started_at=?
+            ORDER BY sampled_at DESC LIMIT ?""",
+            (pid, process_started_at, limit),
+        )
+    rows.reverse()
+    for row in rows:
+        row["risk_evidence"] = json.loads(row.pop("risk_evidence_json"))
+    return rows
 
 
 @router.get("/overview")

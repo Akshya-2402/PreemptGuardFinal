@@ -14,7 +14,6 @@ from app.core.config import DATA_DIR, settings_store
 from app.core.database import Database, database
 from app.monitoring.features import extract_features
 from app.prediction.risk_estimator import estimate_risk
-from app.prediction.train_model import load_trained_model
 from app.recovery.decision_engine import choose_action
 from app.schemas import WorkloadRequest
 from app.workloads.files import atomic_replace_with_retry
@@ -332,23 +331,11 @@ class ProcessManager:
         samples.reverse()
         features = extract_features(samples)
         cfg = settings_store.get()
-        trained_model = None
-        if cfg.prediction_model == "logistic_regression":
-            trained_model = load_trained_model()
-            if trained_model is None:
-                raise RuntimeError(
-                    "Logistic regression is selected but no trained model is available."
-                )
-            if int(trained_model["horizon_s"]) != cfg.prediction_horizon:
-                raise RuntimeError(
-                    "The selected model was trained for a different prediction horizon."
-                )
         prediction = estimate_risk(
             process_id, features, cfg.prediction_horizon,
             cfg.low_risk_threshold, cfg.high_risk_threshold,
             failed=status == "failed",
             minimum_confidence=cfg.minimum_prediction_confidence,
-            trained_model=trained_model,
         )
         self.db.execute(
             """INSERT INTO predictions

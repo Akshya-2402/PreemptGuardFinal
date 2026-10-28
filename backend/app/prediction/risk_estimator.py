@@ -1,6 +1,5 @@
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
-from typing import Any
 
 
 @dataclass(frozen=True)
@@ -26,35 +25,11 @@ def estimate_risk(
     high_threshold: float,
     failed: bool = False,
     minimum_confidence: float = 0.5,
-    trained_model: dict[str, Any] | None = None,
 ) -> Prediction:
     if failed:
         score = 1.0
         contributors = ["process has exited"]
         model_name = "confirmed_failure"
-    elif trained_model is not None:
-        columns = trained_model["feature_columns"]
-        estimator = trained_model["model"]
-        values = [[float(features.get(column, 0.0)) for column in columns]]
-        probabilities = estimator.predict_proba(values)[0]
-        classes = list(estimator.classes_)
-        score = float(probabilities[classes.index(1)])
-        base_estimator = estimator
-        calibrated_classifiers = getattr(estimator, "calibrated_classifiers_", None)
-        if calibrated_classifiers:
-            base_estimator = calibrated_classifiers[0].estimator
-        transformed = base_estimator.named_steps["standardscaler"].transform(values)[0]
-        coefficients = base_estimator.named_steps["logisticregression"].coef_[0]
-        contributors = [
-            columns[index] for index in sorted(
-                range(len(columns)),
-                key=lambda index: abs(float(transformed[index] * coefficients[index])),
-                reverse=True,
-            )[:3]
-        ]
-        model_name = trained_model.get(
-            "model_name", "logistic_regression_sigmoid_group_calibrated"
-        )
     else:
         factors = {
             "cpu level and upward trend": min(

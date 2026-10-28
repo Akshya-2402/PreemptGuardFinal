@@ -15,7 +15,6 @@ from pydantic import BaseModel, Field, model_validator
 from app.core.config import settings_store
 from app.core.database import database
 from app.experiments.metrics import summarize_run
-from app.prediction.train_model import load_trained_model
 from app.schemas import WorkloadRequest
 from app.workloads.manager import process_manager
 
@@ -229,7 +228,7 @@ async def execute_experiment(experiment_id: str, request: ExperimentRequest) -> 
             "experiment_id": experiment_id,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "software_version": "0.1.0",
-            "prediction_model": cfg.prediction_model,
+            "prediction_model": "rule_based",
             "scenario_design": {
                 "method": "paired healthy control and failure scenario for every policy and repetition",
                 "scenarios": [
@@ -295,13 +294,6 @@ def create_experiment(request: ExperimentRequest, background_tasks: BackgroundTa
             detail="low_risk_threshold must be less than high_risk_threshold",
         )
     horizon = request.prediction_horizon or current_settings.prediction_horizon
-    if current_settings.prediction_model == "logistic_regression":
-        model = load_trained_model()
-        if model is None or int(model["horizon_s"]) != horizon:
-            raise HTTPException(
-                status_code=409,
-                detail="The active model is unavailable or trained for a different experiment horizon.",
-            )
     active = database.query(
         "SELECT id FROM experiments WHERE status IN ('queued','running') LIMIT 1"
     )
@@ -367,8 +359,7 @@ def export_experiment(experiment_id: str):
             "experiment_id", "policy", "scenario", "repetition", "trial_position",
             "policy_order_seed", "prediction_model", "workload_type", "process_id",
             "sample_count", "prediction_sample_count", "labeled_prediction_samples",
-            "prediction_model_counts", "logistic_prediction_count",
-            "mean_logistic_risk_score", "true_positives", "false_positives",
+            "prediction_model_counts", "true_positives", "false_positives",
             "false_negatives", "true_negatives",
             "prediction_horizon_s", "precision", "recall", "f1",
             "false_positive_rate", "first_early_warning_lead_time_s",

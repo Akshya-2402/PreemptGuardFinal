@@ -18,7 +18,6 @@ class Settings(BaseModel):
     active_policy: str = Field(
         default="preemptguard", pattern="^(fixed|threshold|preemptguard)$"
     )
-    prediction_model: str = Field(default="rule_based", pattern="^(rule_based|logistic_regression)$")
     minimum_prediction_confidence: float = Field(default=0.55, ge=0.0, le=1.0)
 
 

@@ -1,21 +1,43 @@
 import asyncio
 import json
+import logging
+import sqlite3
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
+import psutil
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api.experiments import router as experiments_router
+from app.api.llm import router as llm_router
+from app.api.learning import router as learning_router
 from app.api.monitoring import router as monitoring_router
 from app.api.processes import router as processes_router
 from app.api.settings import router as settings_router
 from app.core.config import settings_store
 from app.core.database import database
+from app.monitoring.system_processes import system_process_monitor
 from app.workloads.manager import process_manager
+
+logger = logging.getLogger(__name__)
+
+
+async def system_process_monitor_loop() -> None:
+    while True:
+        owned_pids = {
+            child.pid
+            for child in process_manager.children.values()
+            if child.poll() is None
+        }
+        try:
+            await asyncio.to_thread(system_process_monitor.refresh, owned_pids)
+        except (psutil.Error, OSError, sqlite3.Error):
+            logger.exception("Could not refresh the local system-process snapshot.")
+        await asyncio.sleep(5.0)
 
 
 @asynccontextmanager
@@ -45,12 +67,18 @@ async def lifespan(_: FastAPI):
             updates[row["key"]] = value
         settings_store.update(updates)
     loop = asyncio.create_task(process_manager.monitor_loop())
+    system_loop = asyncio.create_task(system_process_monitor_loop())
     try:
         yield
     finally:
         loop.cancel()
+        system_loop.cancel()
         try:
             await loop
+        except asyncio.CancelledError:
+            pass
+        try:
+            await system_loop
         except asyncio.CancelledError:
             pass
         process_manager.stop_all()
@@ -72,6 +100,8 @@ app.include_router(processes_router)
 app.include_router(monitoring_router)
 app.include_router(settings_router)
 app.include_router(experiments_router)
+app.include_router(llm_router)
+app.include_router(learning_router)
 app.mount(
     "/assets",
     StaticFiles(
@@ -100,7 +130,9 @@ def reset_history(confirm: bool = False):
     with database.connect() as connection:
         for table in (
             "measurements", "predictions", "decisions", "recovery_attempts",
-        "monitor_overhead", "experiments", "managed_processes",
+            "monitor_overhead", "experiments", "managed_processes",
+            "host_process_samples", "host_recovery_feedback",
+            "host_action_consents", "host_action_configs", "host_action_runs",
         ):
             connection.execute(f"DELETE FROM {table}")
     return {"status": "history cleared"}
