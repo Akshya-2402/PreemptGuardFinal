@@ -657,6 +657,35 @@ function App() {
             <div className="panel-heading"><div><span className="eyebrow">TOP RESOURCE-PRESSURE SIGNALS</span><h2>Process risk score</h2></div><span className="unit-label">Heuristic score · not failure probability</span></div>
             <ProcessRiskChart items={riskChartRows} />
           </div>
+          <div className="panel comparison-panel">
+            <div className="panel-heading">
+              <div><span className="eyebrow">WHY PREEMPTGUARD</span><h2>Focused recovery, less disruption</h2></div>
+            </div>
+            <div className="comparison-grid">
+              <article className="comparison-card">
+                <span className="eyebrow">01 · NOTICE EARLIER</span>
+                <h3>Spot pressure before a manual check</h3>
+                <p>PreemptGuard watches process health and resource signals, helping surface a process that may need attention instead of relying only on a user noticing a slowdown.</p>
+              </article>
+              <article className="comparison-card">
+                <span className="eyebrow">02 · ACT ON ONE PROCESS</span>
+                <h3>Use targeted, reviewed recovery</h3>
+                <p>Recommendations use local recovery history and apply to the selected process. You review each action, helping avoid repeated trial-and-error or restarting unrelated work.</p>
+              </article>
+              <article className="comparison-card">
+                <span className="eyebrow">03 · KEEP THE OS AVAILABLE</span>
+                <h3>Reduce recovery work around the OS</h3>
+                <p>Handling process-level monitoring and triage in a focused layer can reduce repeated manual investigation and unnecessary recovery attempts, leaving more system capacity for normal workloads.</p>
+              </article>
+            </div>
+            <p className="comparison-note">PreemptGuard complements, not replaces, operating-system safeguards. The OS still performs process actions, and monitoring and recovery use system resources; the goal is to make recovery more targeted, not eliminate its overhead.</p>
+            <div className="layer-callout">
+              <span className="eyebrow">FUTURE DIRECTION · OS-AWARE SUPERVISORY LAYER</span>
+              <h3>Coordinate recovery closer to where processes run</h3>
+              <p>If integrated with operating-system process controls, PreemptGuard could act as a supervisory layer between applications and OS recovery mechanisms: detect unhealthy behavior, apply a bounded process-specific policy, and escalate only when a local recovery is unsuccessful. This could reduce duplicated diagnosis, unnecessary restarts, and disruption to unrelated workloads.</p>
+              <p className="comparison-note">This is a future architecture, not a capability of the current prototype. Today, PreemptGuard monitors accessible processes and requests approval before supported actions; it does not sit in the process-to-OS execution path. Any integrated layer would still rely on the OS for scheduling and resource management, and would need careful permissions, safety limits, and its own resource budget.</p>
+            </div>
+          </div>
         </section>}
 
         {page === "Computer Processes" && <section>
@@ -899,12 +928,6 @@ function App() {
               <p className="help-text">{learningStatus.prediction_evaluation.scope}. Only failures/healthy periods with enough recorded follow-up are included. Neighboring samples are correlated, not independent trials; this is not a guarantee of real-world accuracy.</p>
               <div className="metric-grid model-source-grid">
                 <Metric label="Accuracy" value={learningStatus.prediction_evaluation.accuracy == null ? "Not measured" : `${(learningStatus.prediction_evaluation.accuracy * 100).toFixed(1)}%`} detail="Share of all labeled predictions correct" />
-                <Metric label="True positives" value={learningStatus.prediction_evaluation.true_positives} detail="Failure correctly flagged" />
-                <Metric label="False positives" value={learningStatus.prediction_evaluation.false_positives} detail="Risk flagged without labeled failure" />
-                <Metric label="False negatives" value={learningStatus.prediction_evaluation.false_negatives} detail="Failure not flagged" />
-                <Metric label="True negatives" value={learningStatus.prediction_evaluation.true_negatives} detail="Healthy period correctly not flagged" />
-                <Metric label="Recall" value={learningStatus.prediction_evaluation.recall == null ? "Not measured" : `${(learningStatus.prediction_evaluation.recall * 100).toFixed(1)}%`} detail="Share of labeled failures detected" />
-                <Metric label="F1 score" value={learningStatus.prediction_evaluation.f1 == null ? "Not measured" : `${(learningStatus.prediction_evaluation.f1 * 100).toFixed(1)}%`} detail="Combined precision and recall" />
               </div>
             </div>
 
